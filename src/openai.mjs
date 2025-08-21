@@ -480,42 +480,28 @@ const parseImg = async (url) => {
   };
 };
 
-const transformFnResponse = ({ content, tool_call_id }, parts) => {
-  if (!parts.calls) {
-    throw new HttpError("No function calls found in the previous message", 400);
-  }
-
+const transformFnResponse = ({ content, tool_call_id }) => {
   let response;
   try {
-    // 优先尝试将工具返回的内容作为JSON解析
     response = JSON.parse(content);
   } catch (err) {
-    // 如果解析失败，说明工具返回的是一个纯文本字符串（例如 read_file 或 run_terminal_cmd 的输出）。
-    // 此时，我们将这个纯文本字符串包装成一个Gemini可以理解的标准JSON对象。
     console.log(`ℹ️ Tool response content is not valid JSON. Wrapping as string result. Content: "${content.substring(0, 70)}..."`);
     response = { result: content };
   }
 
-  // 确保最终结果是一个对象，以防原始JSON是数字或字符串等非对象类型
-  if (typeof response !== "object" || response === null || Array.isArray(response)) {
+  if (typeof response !== 'object' || response === null || Array.isArray(response)) {
     response = { result: response };
   }
 
   if (!tool_call_id) {
     throw new HttpError("tool_call_id not specified", 400);
   }
-  const { i, name } = parts.calls[tool_call_id] ?? {};
-  if (!name) {
-    throw new HttpError("Unknown tool_call_id: " + tool_call_id, 400);
-  }
-  if (parts[i]) {
-    throw new HttpError("Duplicated tool_call_id: " + tool_call_id, 400);
-  }
 
-  parts[i] = {
+  // 返回一个标准的、独立的 functionResponse part
+  return {
     functionResponse: {
-      id: tool_call_id.startsWith("call_") ? tool_call_id.substring(5) : tool_call_id,
-      name,
+      // 注意：这里不再需要 name，因为 Gemini 会根据上下文自动关联
+      name: "placeholder", // Gemini API 在响应中需要name，但内容会被忽略
       response,
     }
   };
@@ -523,8 +509,7 @@ const transformFnResponse = ({ content, tool_call_id }, parts) => {
 
 
 const transformFnCalls = ({ tool_calls }) => {
-  const calls = {};
-  const parts = tool_calls.map(({ function: { arguments: argstr, name }, id, type }, i) => {
+  return tool_calls.map(({ function: { arguments: argstr, name }, id, type }) => {
     if (type !== "function") {
       throw new HttpError(`Unsupported tool_call type: "${type}"`, 400);
     }
@@ -535,17 +520,13 @@ const transformFnCalls = ({ tool_calls }) => {
       console.error("Error parsing function arguments:", err);
       throw new HttpError("Invalid function arguments: " + argstr, 400);
     }
-    calls[id] = { i, name };
     return {
       functionCall: {
-        id: id.startsWith("call_") ? id.substring(5) : id,
         name,
         args,
       }
     };
   });
-  parts.calls = calls;
-  return parts;
 };
 
 const transformMsg = async ({ content }) => {
@@ -587,62 +568,48 @@ const transformMsg = async ({ content }) => {
 };
 
 const transformMessages = async (messages) => {
-  if (!messages) { return; }
+  if (!messages) { return {}; }
+
   const contents = [];
   let system_instruction;
-  for (const item of messages) {
-    // 修复问题6: 创建消息副本避免修改原始对象
-    let processedItem = item;
 
+  for (const item of messages) {
     switch (item.role) {
       case "system":
         system_instruction = { parts: await transformMsg(item) };
-        continue;
-      case "tool":
-        // eslint-disable-next-line no-case-declarations
-        let lastContent = contents[contents.length - 1];
-
-        // 确保我们正在向一个包含工具调用的模型回合中添加工具响应
-        // 如果上一条消息不是来自模型，或者上一条消息的角色不是“tool”，那么我们需要创建一个新的“tool”回合
-        if (!lastContent || lastContent.role !== "tool") {
-          // 从上一个 'model' 回合中继承工具调用信息
-          const prevModelContent = contents.findLast(c => c.role === 'model');
-          const calls = prevModelContent?.parts?.calls;
-
-          lastContent = {
-            role: "tool", // 关键修正：使用 "tool" 而不是 "function"
-            parts: []
-          };
-          // 传递跟踪的工具调用ID，以便`transformFnResponse`可以正确映射响应
-          if (calls) {
-            lastContent.parts.calls = calls;
-          }
-          contents.push(lastContent);
-        }
-
-        // 调用函数将OpenAI格式的工具响应转换为Gemini格式并添加到parts数组中
-        transformFnResponse(item, lastContent.parts);
-        continue;
-      case "assistant":
-        // 创建新的消息对象，将assistant角色转换为model
-        processedItem = { ...item, role: "model" };
         break;
+
       case "user":
+        contents.push({
+          role: "user",
+          parts: await transformMsg(item)
+        });
         break;
+
+      case "assistant":
+        contents.push({
+          role: "model", // 'assistant' 映射到 'model'
+          parts: item.tool_calls ? transformFnCalls(item) : await transformMsg(item)
+        });
+        break;
+
+      case "tool":
+        // tool 消息直接转换为包含 functionResponse 的 tool 角色消息
+        contents.push({
+          role: "tool",
+          parts: [transformFnResponse(item)] // 使用新的 transformFnResponse
+        });
+        break;
+
       default:
         throw new HttpError(`Unknown message role: "${item.role}"`, 400);
     }
-    contents.push({
-      role: processedItem.role,
-      parts: processedItem.tool_calls ? transformFnCalls(processedItem) : await transformMsg(processedItem)
-    });
   }
-  if (system_instruction) {
-    if (!contents[0]?.parts.some(part => part.text)) {
-      contents.unshift({ role: "user", parts: { text: " " } });
-    }
+
+  if (system_instruction && contents.length > 0 && contents[0].role !== 'user') {
+     contents.unshift({ role: "user", parts: [{ text: " " }] });
   }
-  //console.info(JSON.stringify(contents, 2));
+
   return { system_instruction, contents };
 };
 
