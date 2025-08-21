@@ -700,12 +700,24 @@ const transformTools = (req) => {
   return { tools, tool_config };
 };
 
-const transformRequest = async (req) => ({
-  ...await transformMessages(req.messages),
-  safetySettings,
-  generationConfig: transformConfig(req),
-  ...transformTools(req),
-});
+const transformRequest = async (req) => {
+  const generationConfig = transformConfig(req);
+
+  // 强制禁用 Gemini 的 "Thinking" 功能。
+  // 这个功能会导致模型返回其思考过程的“实时评论”，而不是直接的答案或工具调用，
+  // 这种行为与 Cursor 客户端的期望不兼容。
+  if (generationConfig.thinkingConfig) {
+    console.log('🔧 Disabling Gemini "Thinking" feature to ensure direct responses for Cursor compatibility.');
+    delete generationConfig.thinkingConfig;
+  }
+
+  return {
+    ...await transformMessages(req.messages),
+    safetySettings,
+    generationConfig, // 使用我们修改过的配置
+    ...transformTools(req),
+  };
+};
 
 const generateId = () => {
   const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
