@@ -373,7 +373,7 @@ const adjustSchema = (schema) => {
   const cleanSchema = (obj) => {
     if (typeof obj !== "object" || obj === null) return obj;
     if (Array.isArray(obj)) return obj.map(cleanSchema);
-    
+
     const cleaned = {};
     for (const [key, value] of Object.entries(obj)) {
       // 在这里添加 'exclusiveMinimum' 到过滤列表
@@ -600,16 +600,28 @@ const transformMessages = async (messages) => {
         continue;
       case "tool":
         // eslint-disable-next-line no-case-declarations
-        let { role, parts } = contents[contents.length - 1] ?? {};
-        if (role !== "function") {
-          const calls = parts?.calls;
-          parts = []; parts.calls = calls;
-          contents.push({
-            role: "function", // ignored
-            parts
-          });
+        let lastContent = contents[contents.length - 1];
+
+        // 确保我们正在向一个包含工具调用的模型回合中添加工具响应
+        // 如果上一条消息不是来自模型，或者上一条消息的角色不是“tool”，那么我们需要创建一个新的“tool”回合
+        if (!lastContent || lastContent.role !== "tool") {
+          // 从上一个 'model' 回合中继承工具调用信息
+          const prevModelContent = contents.findLast(c => c.role === 'model');
+          const calls = prevModelContent?.parts?.calls;
+
+          lastContent = {
+            role: "tool", // 关键修正：使用 "tool" 而不是 "function"
+            parts: []
+          };
+          // 传递跟踪的工具调用ID，以便`transformFnResponse`可以正确映射响应
+          if (calls) {
+            lastContent.parts.calls = calls;
+          }
+          contents.push(lastContent);
         }
-        transformFnResponse(item, parts);
+
+        // 调用函数将OpenAI格式的工具响应转换为Gemini格式并添加到parts数组中
+        transformFnResponse(item, lastContent.parts);
         continue;
       case "assistant":
         // 创建新的消息对象，将assistant角色转换为model
