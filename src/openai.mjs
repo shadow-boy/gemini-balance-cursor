@@ -373,11 +373,11 @@ const adjustSchema = (schema) => {
   const cleanSchema = (obj) => {
     if (typeof obj !== "object" || obj === null) return obj;
     if (Array.isArray(obj)) return obj.map(cleanSchema);
-
+    
     const cleaned = {};
     for (const [key, value] of Object.entries(obj)) {
-      // 跳过Gemini API不支持的字段
-      if (key === '$schema' || key === 'strict' || key === 'additionalProperties') {
+      // 在这里添加 'exclusiveMinimum' 到过滤列表
+      if (key === '$schema' || key === 'strict' || key === 'additionalProperties' || key === 'exclusiveMinimum') {
         continue;
       }
       cleaned[key] = cleanSchema(value);
@@ -386,7 +386,6 @@ const adjustSchema = (schema) => {
   };
 
   const cleanedSchema = cleanSchema(schema);
-  // 不需要再调用adjustProps，因为cleanSchema已经处理了所有不兼容字段
   return cleanedSchema;
 };
 
